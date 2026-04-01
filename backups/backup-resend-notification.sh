@@ -91,86 +91,92 @@ EOF
 log "=== Backup started ==="
 
 # Determine backup type
-if [ "$DAY_OF_MONTH" -eq 1 ]
+
+BACKUP_TYPES=("daily")
+
+if [ "$DAY_OF_WEEK" -eq 7 ]
 then
-	BACKUP_TYPE="monthly"
-	RETENTION=$MONTHLY_RETENTION
-elif
-	[ "$DAY_OF_WEEK" -eq 7 ]
-then
-	BACKUP_TYPE="weekly"
-	RETENTION=$WEEKLY_RETENTION
-else
-	BACKUP_TYPE="daily"
-	RETENTION=$DAILY_RETENTION
+	BACKUP_TYPES=("weekly")
 fi
 
-log "[+] Running $BACKUP_TYPE backup"
+if [ "$DAY_OF_MONTH" -eq 1 ]
+then
+	BACKUP_TYPES=("monthly")
+fi
 
 # Loop through sites
-for SITE_CONF in "${SITES[@]}"
+for BACKUP_TYPE in "${BACKUP_TYPES[@]}"
 do
-	IFS=":" read -r SITE_NAME TYPE WEBROOT DB_NAME EXTRA <<< "$SITE_CONF"
-	SITE_BASE="/backups/$SITE_NAME"
-
-	FILE_DIR="$SITE_BASE/files/$BACKUP_TYPE"
-	DB_DIR="$SITE_BASE/db/$BACKUP_TYPE"
-
-	mkdir -p "$FILE_DIR" "$DB_DIR"
-
-	log "[+] Backing up site '$SITE_NAME'"
-
-	# Files backup
-	FILE_BACKUP="$FILE_DIR/backup_$DATE.tar.gz"
-	log "	[FILES] Backing up $WEBROOT..."
-	if ! tar czf "$FILE_BACKUP" "$WEBROOT" &>/dev/null
-	then
-		log "[ERROR] File backup failed for $SITE_NAME"
-		send_failure_email "$SITE_NAME" "$BACKUP_TYPE" "files" "tar command failed"
-		continue
-	fi
-	log "[OK] Files Backup completed: $FILE_BACKUP"
-
-	# Db backup
-	DB_BACKUP="$DB_DIR/backup_$DATE.sql.gz"
-
-	case "$TYPE" in
-		mysql)
-			log "	[DB] MySQL dump for $DB_NAME..."
-			if ! $MYSQLDUMP "$DB_NAME" --single-transaction | gzip > "$DB_BACKUP"
-			then
-				log "[ERROR] MySQL backup failed for $SITE_NAME"
-				send_failure_email "$SITE_NAME" "$BACKUP_TYPE" "db" "mysqldump failed"
-				continue
-			fi
-			#log "	[DB] MySQL dump for $DB_NAME completed: $DB_BACKUP"
-			;;
-		docker-postgres)
-			CONTAINER="$EXTRA"
-			log "	[DB] PostgreSQL dump from Docker container '$CONTAINER' (DB: $DB_NAME)..."
-			if ! docker exec "$CONTAINER" pg_dump -U default "$DB_NAME" | gzip > "$DB_BACKUP"
-			then
-				log "[ERROR] PostgreSQL backup failed for $SITE_NAME (Docker: $CONTAINER)"
-				send_failure_email "$SITE_NAME" "$BACKUP_TYPE" "db" "pg_dump failed in container $CONTAINER"
-			fi
-			#log "	[DB] PostgreSQL dump for $DB_NAME completed: $DB_BACKUP"
-			;;
-		*)
-			log "[ERROR] Unknown backup type: $TYPE"
-			send_failure_email "$SITE_NAME" "$BACKUP_TYPE" "db" "Unknown type: $TYPE"
-			continue
-			;;
+	case "$BACKUP_TYPE" in
+		daily) RETENTION=$DAILY_RETENTION ;;
+		weekly) RETENTION=$WEEKLY_RETENTION ;;
+		monthly) RETENTION=$MONTHLY_RETENTION ;;
 	esac
 
-	log "	[DB] Backup completed: $DB_BACKUP"
+	log "[+] Performing $BACKUP_TYPE backup..."
 
-	# Cleanup old files
-	log "	[CLEANUP] Removing old file backups (> $RETENTION days)"
-	find "$FILE_DIR" -type f -mtime +$RETENTION -delete
+		for SITE_CONF in "${SITES[@]}"
+		do
+			IFS=":" read -r SITE_NAME TYPE WEBROOT DB_NAME EXTRA <<< "$SITE_CONF"
+			SITE_BASE="/backups/$SITE_NAME"
 
-	# Cleanup old db backups
-	log "	[CLEANUP] Removing old db backups (> $RETENTION days)"
-	find "$DB_DIR" -type f -mtime +$RETENTION -delete
+			FILE_DIR="$SITE_BASE/files/$BACKUP_TYPE"
+			DB_DIR="$SITE_BASE/db/$BACKUP_TYPE"
+
+			mkdir -p "$FILE_DIR" "$DB_DIR"
+
+			log "[+] Backing up site '$SITE_NAME'"
+
+			# Files backup
+			FILE_BACKUP="$FILE_DIR/backup_$DATE.tar.gz"
+			log "	[FILES] Backing up $WEBROOT..."
+			if ! tar czf "$FILE_BACKUP" "$WEBROOT" &>/dev/null
+			then
+				log "[ERROR] File backup failed for $SITE_NAME"
+				send_failure_email "$SITE_NAME" "$BACKUP_TYPE" "files" "tar command failed"
+				continue
+			fi
+			log "[OK] Files Backup completed: $FILE_BACKUP"
+
+			# Db backup
+			DB_BACKUP="$DB_DIR/backup_$DATE.sql.gz"
+
+			case "$TYPE" in
+				mysql)
+					log "	[DB] MySQL dump for $DB_NAME..."
+					if ! $MYSQLDUMP "$DB_NAME" --single-transaction | gzip > "$DB_BACKUP"
+					then
+						log "[ERROR] MySQL backup failed for $SITE_NAME"
+						send_failure_email "$SITE_NAME" "$BACKUP_TYPE" "db" "mysqldump failed"
+						continue
+					fi
+					;;
+				docker-postgres)
+					CONTAINER="$EXTRA"
+					log "	[DB] PostgreSQL dump from Docker container '$CONTAINER' (DB: $DB_NAME)..."
+					if ! docker exec "$CONTAINER" pg_dump -U default "$DB_NAME" | gzip > "$DB_BACKUP"
+					then
+						log "[ERROR] PostgreSQL backup failed for $SITE_NAME (Docker: $CONTAINER)"
+						send_failure_email "$SITE_NAME" "$BACKUP_TYPE" "db" "pg_dump failed in container $CONTAINER"
+					fi
+					;;
+				*)
+					log "[ERROR] Unknown backup type: $TYPE"
+					send_failure_email "$SITE_NAME" "$BACKUP_TYPE" "db" "Unknown type: $TYPE"
+					continue
+					;;
+			esac
+
+			log "	[DB] Backup completed: $DB_BACKUP"
+
+			# Cleanup old files
+			log "	[CLEANUP] Removing old file backups (> $RETENTION days)"
+			find "$FILE_DIR" -type f -mtime +$RETENTION -delete
+
+			# Cleanup old db backups
+			log "	[CLEANUP] Removing old db backups (> $RETENTION days)"
+			find "$DB_DIR" -type f -mtime +$RETENTION -delete
+	done
 done
 
 log "=== $BACKUP_TYPE Backup completed successfully ==="
